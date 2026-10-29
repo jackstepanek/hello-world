@@ -1,7 +1,7 @@
 FeatureScript 3095;
 import(path : "onshape/std/common.fs", version : "3095.0");
 
-// Rebuild of POMO.step ("Part Studio 1" / "Part 1"): a 15" x 16" x 0.75" plate with
+// Rebuild of POMO.step ("Part Studio 1" / "Part 1"): a 15" x 16" plate (1/2", 5/8" or 3/4" thick) with
 // 0.075" corner radii and an 11" x 1" through-slot (0.125" corner radii) centered 8" below the top edge.
 // Placement matches the original export: profile on the Front plane (XZ), top edge on the origin,
 // plate hanging toward -Z and extruded toward -Y.
@@ -29,6 +29,23 @@ function roundedRectangle(sketch is Sketch, prefix is string, cx is ValueWithUni
     }
 }
 
+// Stock thicknesses offered for the plate. Add new options here and in PLATE_THICKNESS_VALUES.
+export enum PlateThickness
+{
+    annotation { "Name" : "1/2\"" }
+    HALF_INCH,
+    annotation { "Name" : "5/8\"" }
+    FIVE_EIGHTHS_INCH,
+    annotation { "Name" : "3/4\"" }
+    THREE_QUARTERS_INCH
+}
+
+const PLATE_THICKNESS_VALUES = {
+        PlateThickness.HALF_INCH : 0.5 * inch,
+        PlateThickness.FIVE_EIGHTHS_INCH : 0.625 * inch,
+        PlateThickness.THREE_QUARTERS_INCH : 0.75 * inch
+    };
+
 annotation { "Feature Type Name" : "POMO Plate" }
 export const pomoPlate = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
@@ -38,7 +55,7 @@ export const pomoPlate = defineFeature(function(context is Context, id is Id, de
         annotation { "Name" : "Height" }
         isLength(definition.height, LENGTH_BOUNDS);
         annotation { "Name" : "Thickness" }
-        isLength(definition.thickness, LENGTH_BOUNDS);
+        definition.thickness is PlateThickness;
         annotation { "Name" : "Corner radius" }
         isLength(definition.cornerRadius, LENGTH_BOUNDS);
         annotation { "Name" : "Slot width" }
@@ -61,13 +78,13 @@ export const pomoPlate = defineFeature(function(context is Context, id is Id, de
                     "entities" : qSketchRegion(id + "sketch", true),
                     "direction" : sketchPlane.normal,
                     "endBound" : BoundingType.BLIND,
-                    "endDepth" : definition.thickness
+                    "endDepth" : PLATE_THICKNESS_VALUES[definition.thickness]
                 });
         opDeleteBodies(context, id + "deleteSketch", { "entities" : qCreatedBy(id + "sketch", EntityType.BODY) });
     }, {
         width : 15 * inch,
         height : 16 * inch,
-        thickness : 0.75 * inch,
+        thickness : PlateThickness.THREE_QUARTERS_INCH,
         cornerRadius : 0.075 * inch,
         slotWidth : 11 * inch,
         slotHeight : 1 * inch,
