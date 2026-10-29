@@ -31,6 +31,12 @@ const THICKNESS_VALUES = {
 // Extra notch width beyond the rail thickness: negative for a press fit, positive for a loose fit.
 const FIT_BOUNDS = { (inch) : [-0.1, -0.002, 0.1] } as LengthBoundSpec;
 
+// Prep for cutting: CNC routers cut with a round bit, so inside corners can be no sharper than the bit's
+// radius and slots must be at least the bit's diameter. Sharp inside corners get dogbones (a bit-sized hole
+// whose edge passes through the corner) so mating parts seat fully.
+const TOOL_DIAMETER_BOUNDS = { (inch) : [0.0625, 0.25, 1] } as LengthBoundSpec;
+const DOGBONE_CLEARANCE = 0.005 * inch; // dogbone diameter beyond the bit diameter
+
 // Frame and back panel outline.
 const PANEL_WIDTH = 15 * inch;
 const PANEL_HEIGHT = 16 * inch;
@@ -163,6 +169,65 @@ function notchCutters(sketch is Sketch, prefix is string, outerRadius is ValueWi
     }
 }
 
+// Adds dogbones to every sharp inside corner of the given parts and checks the remaining geometry against the
+// router bit. Corners are the part edges that run through the thickness (along sheetNormal) where two flat
+// faces meet concavely.
+function addDogbones(context is Context, id is Id, parts is Query, sheetNormal is Vector, toolDiameter is ValueWithUnits)
+{
+    const toolRadius = toolDiameter / 2;
+    const dogboneRadius = (toolDiameter + DOGBONE_CLEARANCE) / 2;
+    var dogboneCount = 0;
+    for (var part in evaluateQuery(context, parts))
+    {
+        const partName = getProperty(context, { "entity" : part, "propertyType" : PropertyType.NAME });
+        // Curved inside walls tighter than the bit can't be routed.
+        for (var face in evaluateQuery(context, qGeometry(qOwnedByBody(part, EntityType.FACE), GeometryType.CYLINDER)))
+        {
+            const surface = evSurfaceDefinition(context, { "face" : face });
+            const tangent = evFaceTangentPlane(context, { "face" : face, "parameter" : vector(0.5, 0.5) });
+            // An inside wall's outward normal points back toward the cylinder's axis.
+            const isInsideWall = dot(tangent.normal, tangent.origin - surface.coordSystem.origin) < 0 * meter;
+            if (isInsideWall && surface.radius < toolRadius - TOLERANCE.zeroLength * meter)
+                throw regenError(partName ~ " has an inside radius smaller than the router bit radius.", ["toolDiameter"], face);
+        }
+
+        var cutters = [];
+        for (var edge in evaluateQuery(context, qGeometry(qOwnedByBody(part, EntityType.EDGE), GeometryType.LINE)))
+        {
+            const edgeLine = evLine(context, { "edge" : edge });
+            if (!parallelVectors(edgeLine.direction, sheetNormal) || evEdgeConvexity(context, { "edge" : edge }) != EdgeConvexityType.CONCAVE)
+                continue;
+            const walls = evaluateQuery(context, qGeometry(qAdjacent(edge, AdjacencyType.EDGE, EntityType.FACE), GeometryType.PLANE));
+            if (size(walls) != 2)
+                continue;
+            const wallNormal0 = evPlane(context, { "face" : walls[0] }).normal;
+            const wallNormal1 = evPlane(context, { "face" : walls[1] }).normal;
+            // Wall normals point out of the part, so their sum points into the cut-away corner.
+            const intoCut = normalize(wallNormal0 + wallNormal1);
+            const ends = evaluateQuery(context, qAdjacent(edge, AdjacencyType.VERTEX, EntityType.VERTEX));
+            const end0 = evVertexPoint(context, { "vertex" : ends[0] });
+            const end1 = evVertexPoint(context, { "vertex" : ends[1] });
+            const along = normalize(end1 - end0);
+            const cutterId = id + ("dogbone" ~ dogboneCount);
+            fCylinder(context, cutterId, {
+                        "bottomCenter" : end0 + intoCut * dogboneRadius - along * 0.1 * inch,
+                        "topCenter" : end1 + intoCut * dogboneRadius + along * 0.1 * inch,
+                        "radius" : dogboneRadius
+                    });
+            cutters = append(cutters, qCreatedBy(cutterId, EntityType.BODY));
+            dogboneCount += 1;
+        }
+        if (cutters != [])
+        {
+            opBoolean(context, id + ("cutDogbones" ~ dogboneCount), {
+                        "tools" : qUnion(cutters),
+                        "targets" : part,
+                        "operationType" : BooleanOperationType.SUBTRACTION
+                    });
+        }
+    }
+}
+
 annotation { "Feature Type Name" : "POMO Parts" }
 export const pomoParts = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
@@ -177,6 +242,13 @@ export const pomoParts = defineFeature(function(context is Context, id is Id, de
         definition.railThickness is PlateThickness;
         annotation { "Name" : "Notch fit allowance", "Description" : "Added to the rail thickness to size the ring notches. Negative is tighter." }
         isLength(definition.notchFit, FIT_BOUNDS);
+        annotation { "Name" : "Prep for cutting", "Description" : "Adds dogbones to sharp inside corners and checks slots and radii against the router bit." }
+        definition.prepForCutting is boolean;
+        if (definition.prepForCutting)
+        {
+            annotation { "Name" : "Router bit diameter" }
+            isLength(definition.toolDiameter, TOOL_DIAMETER_BOUNDS);
+        }
     }
     {
         const sketchPlane = plane(vector(0, 0, 0) * meter, vector(0, -1, 0), vector(1, 0, 0));
@@ -230,10 +302,19 @@ export const pomoParts = defineFeature(function(context is Context, id is Id, de
                 {
                     skRectangle(sketch, "bar", { "firstCorner" : STRAIGHT_RAIL_MIN, "secondCorner" : STRAIGHT_RAIL_MAX });
                 }), "Straight rail");
+
+        if (definition.prepForCutting)
+        {
+            if (notchWidth < definition.toolDiameter || EDGE_NOTCH_OUTER_X - EDGE_NOTCH_INNER_X < definition.toolDiameter)
+                throw regenError("The router bit is wider than a notch. Choose a smaller bit.", ["toolDiameter"]);
+            addDogbones(context, id + "prep", qBodyType(qCreatedBy(id, EntityType.BODY), BodyType.SOLID), sketchPlane.normal, definition.toolDiameter);
+        }
     }, {
         frameThickness : PlateThickness.THREE_QUARTERS_INCH,
         panelThickness : PlateThickness.HALF_INCH,
         ringThickness : PlateThickness.HALF_INCH,
         railThickness : PlateThickness.HALF_INCH,
-        notchFit : -0.002 * inch
+        notchFit : -0.002 * inch,
+        prepForCutting : false,
+        toolDiameter : 0.25 * inch
     });
