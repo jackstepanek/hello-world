@@ -1,16 +1,17 @@
 FeatureScript 3095;
 import(path : "onshape/std/common.fs", version : "3095.0");
 
-// Rebuild of Part Studio 1 (POMO): three flat parts cut from 1/2", 5/8" or 3/4" stock.
-//   Plate       - 15" x 16" plate (0.075" corner radii) with an 11" x 1" through-slot (0.125" corner radii)
-//                 centered 8" below its top edge, joined to a half-ring rail (5.5"-7.5" radius) on its top
-//                 edge with nine notches every 15 degrees.
-//   Outer rail  - ring segment (12"-14" radius) with 2" feet at each end and eight notches every 7 degrees.
-//   Straight rail - 2" x 14.5" bar beside the plate.
-// Placement matches the original export: profiles on the Front plane (XZ) with the plate's top edge and
-// the ring centers on the origin, extruded toward -Y.
+// Rebuild of Part Studio 1 (POMO): six flat parts laid out on the Front plane (XZ) and extruded toward -Y.
+//   Frame         - 15" x 16" outline with four edge notches and an 11" x 14" window.
+//   Back panel    - same outline and edge notches, no window.
+//   Large ring    - half ring, 5.5"-7.5" radius, nine notches every 15 degrees.
+//   Middle ring   - half ring, 3.375"-5.375" radius, five notches every 30 degrees.
+//   Small ring    - half ring, 1.25"-3.25" radius, no notches.
+//   Straight rail - 2" x 14.5" bar that slides into the ring notches.
+// Every part's thickness is selectable. The ring notches are sized from the straight rail's thickness so the
+// rail always fits them.
 
-// Stock thicknesses offered for the parts. Add new options here and in PLATE_THICKNESS_VALUES.
+// Stock thicknesses offered for the parts. Add new options here and in THICKNESS_VALUES.
 export enum PlateThickness
 {
     annotation { "Name" : "1/2\"" }
@@ -21,33 +22,41 @@ export enum PlateThickness
     THREE_QUARTERS_INCH
 }
 
-const PLATE_THICKNESS_VALUES = {
+const THICKNESS_VALUES = {
         PlateThickness.HALF_INCH : 0.5 * inch,
         PlateThickness.FIVE_EIGHTHS_INCH : 0.625 * inch,
         PlateThickness.THREE_QUARTERS_INCH : 0.75 * inch
     };
 
-// Notches cut into the outer edge of both curved rails.
-const NOTCH_WIDTH = 0.498 * inch;
-const NOTCH_DEPTH = 1 * inch; // from the outer radius to the notch's bottom corners
+// Extra notch width beyond the rail thickness: negative for a press fit, positive for a loose fit.
+const FIT_BOUNDS = { (inch) : [-0.1, -0.002, 0.1] } as LengthBoundSpec;
 
-// Half-ring rail on top of the plate.
-const INNER_RAIL_INNER_RADIUS = 5.5 * inch;
-const INNER_RAIL_OUTER_RADIUS = 7.5 * inch;
-const INNER_RAIL_NOTCH_ANGLES = [30, 45, 60, 75, 90, 105, 120, 135, 150];
+// Frame and back panel outline.
+const PANEL_WIDTH = 15 * inch;
+const PANEL_HEIGHT = 16 * inch;
+const PANEL_CORNER_RADIUS = 0.075 * inch;
+const EDGE_NOTCH_INNER_X = 4.041 * inch;
+const EDGE_NOTCH_OUTER_X = 4.707 * inch;
+const EDGE_NOTCH_DEPTH = 0.472 * inch;
+const EDGE_NOTCH_FILLET_RADIUS = 0.05 * inch;
 
-// Outer ring rail with feet.
-const OUTER_RAIL_INNER_RADIUS = 12 * inch;
-const OUTER_RAIL_OUTER_RADIUS = 14 * inch;
-const OUTER_RAIL_FOOT_OUTER_X = 7.5 * inch;
-const OUTER_RAIL_FOOT_INNER_X = 5.48 * inch;
-const OUTER_RAIL_FOOT_BOTTOM = 9.82 * inch;
-const OUTER_RAIL_FILLET_RADIUS = 0.5 * inch;
-const OUTER_RAIL_NOTCH_ANGLES = [65.5, 72.5, 79.5, 86.5, 93.5, 100.5, 107.5, 114.5];
+// Frame window, centered on the panel.
+const WINDOW_WIDTH = 11 * inch;
+const WINDOW_HEIGHT = 14 * inch;
+const WINDOW_CORNER_RADIUS = 0.75 * inch;
+
+// Half rings, centered on the origin and spanning 0 to 180 degrees. Ring notches run radially in from the
+// outer edge; NOTCH_DEPTH is measured from the outer radius to the notch's bottom corners.
+const NOTCH_DEPTH = 1 * inch;
+const LARGE_RING_RADII = [5.5 * inch, 7.5 * inch];
+const LARGE_RING_NOTCH_ANGLES = [30, 45, 60, 75, 90, 105, 120, 135, 150];
+const MIDDLE_RING_RADII = [3.375 * inch, 5.375 * inch];
+const MIDDLE_RING_NOTCH_ANGLES = [30, 60, 90, 120, 150];
+const SMALL_RING_RADII = [1.25 * inch, 3.25 * inch];
 
 // Straight rail.
-const STRAIGHT_RAIL_MIN = vector(-11.881, -15.25) * inch;
-const STRAIGHT_RAIL_MAX = vector(-9.881, -0.75) * inch;
+const STRAIGHT_RAIL_MIN = vector(-9.9019, -15.5) * inch;
+const STRAIGHT_RAIL_MAX = vector(-7.9019, -1) * inch;
 
 function polar(radius is ValueWithUnits, angle is ValueWithUnits) returns Vector
 {
@@ -77,47 +86,67 @@ function roundedRectangle(sketch is Sketch, prefix is string, cx is ValueWithUni
     }
 }
 
-// Half ring between two radii, spanning 0 to 180 degrees.
-function halfRing(sketch is Sketch, prefix is string, innerRadius is ValueWithUnits, outerRadius is ValueWithUnits)
+// Panel outline with its top edge on the origin: a rounded rectangle with a notch near each end of the top and
+// bottom edges, the notch mouths filleted. Drawn one quadrant at a time in (x, depth-from-edge) coordinates.
+function panelOutline(sketch is Sketch, prefix is string)
 {
-    skLineSegment(sketch, prefix ~ "right", { "start" : vector(innerRadius, 0 * meter), "end" : vector(outerRadius, 0 * meter) });
-    skArc(sketch, prefix ~ "outer", { "start" : vector(outerRadius, 0 * meter), "mid" : vector(0 * meter, outerRadius), "end" : vector(-outerRadius, 0 * meter) });
-    skLineSegment(sketch, prefix ~ "left", { "start" : vector(-outerRadius, 0 * meter), "end" : vector(-innerRadius, 0 * meter) });
-    skArc(sketch, prefix ~ "inner", { "start" : vector(-innerRadius, 0 * meter), "mid" : vector(0 * meter, innerRadius), "end" : vector(innerRadius, 0 * meter) });
-}
-
-// Ring segment between two radii whose ends drop into rectangular feet, with a fillet where the outer arc
-// meets each foot. Symmetric about the vertical axis.
-function footedRing(sketch is Sketch, prefix is string)
-{
-    const ri = OUTER_RAIL_INNER_RADIUS;
-    const ro = OUTER_RAIL_OUTER_RADIUS;
-    const xo = OUTER_RAIL_FOOT_OUTER_X;
-    const xi = OUTER_RAIL_FOOT_INNER_X;
-    const fr = OUTER_RAIL_FILLET_RADIUS;
-    const filletCenter = vector(xo - fr, sqrt((ro - fr) ^ 2 - (xo - fr) ^ 2));
-    const arcTangent = filletCenter * (ro / norm(filletCenter));
-    const footTangent = vector(xo, filletCenter[1]);
-    const innerEnd = vector(xi, sqrt(ri ^ 2 - xi ^ 2));
-    const filletMid = filletCenter + normalize((arcTangent - filletCenter) + (footTangent - filletCenter)) * fr;
-    for (var side in [1, -1])
+    const hw = PANEL_WIDTH / 2;
+    const rc = PANEL_CORNER_RADIUS;
+    const rf = EDGE_NOTCH_FILLET_RADIUS;
+    const x0 = EDGE_NOTCH_INNER_X;
+    const x1 = EDGE_NOTCH_OUTER_X;
+    const d = EDGE_NOTCH_DEPTH;
+    const zero = 0 * meter;
+    const diag = 1 / sqrt(2);
+    // Each entry is [start, end] for a line or [start, mid, end] for an arc.
+    const quadrant = [
+            [vector(zero, zero), vector(x0 - rf, zero)],
+            [vector(x0 - rf, zero), vector(x0 - rf + rf * diag, rf - rf * diag), vector(x0, rf)],
+            [vector(x0, rf), vector(x0, d)],
+            [vector(x0, d), vector(x1, d)],
+            [vector(x1, d), vector(x1, rf)],
+            [vector(x1, rf), vector(x1 + rf - rf * diag, rf - rf * diag), vector(x1 + rf, zero)],
+            [vector(x1 + rf, zero), vector(hw - rc, zero)],
+            [vector(hw - rc, zero), vector(hw - rc + rc * diag, rc - rc * diag), vector(hw, rc)],
+            [vector(hw, rc), vector(hw, PANEL_HEIGHT / 2)]
+        ];
+    var q = 0;
+    for (var sx in [1, -1])
     {
-        const m = function(v) { return vector(side * v[0], v[1]); };
-        const suffix = side > 0 ? "R" : "L";
-        skArc(sketch, prefix ~ "fillet" ~ suffix, { "start" : m(arcTangent), "mid" : m(filletMid), "end" : m(footTangent) });
-        skLineSegment(sketch, prefix ~ "footOuter" ~ suffix, { "start" : m(footTangent), "end" : m(vector(xo, OUTER_RAIL_FOOT_BOTTOM)) });
-        skLineSegment(sketch, prefix ~ "footBottom" ~ suffix, { "start" : m(vector(xo, OUTER_RAIL_FOOT_BOTTOM)), "end" : m(vector(xi, OUTER_RAIL_FOOT_BOTTOM)) });
-        skLineSegment(sketch, prefix ~ "footInner" ~ suffix, { "start" : m(vector(xi, OUTER_RAIL_FOOT_BOTTOM)), "end" : m(innerEnd) });
+        for (var fromBottom in [false, true])
+        {
+            const toSketch = function(p) { return vector(sx * p[0], fromBottom ? p[1] - PANEL_HEIGHT : -p[1]); };
+            for (var k = 0; k < size(quadrant); k += 1)
+            {
+                const seg = quadrant[k];
+                const segId = prefix ~ q ~ "_" ~ k;
+                if (size(seg) == 2)
+                    skLineSegment(sketch, segId, { "start" : toSketch(seg[0]), "end" : toSketch(seg[1]) });
+                else
+                    skArc(sketch, segId, { "start" : toSketch(seg[0]), "mid" : toSketch(seg[1]), "end" : toSketch(seg[2]) });
+            }
+            q += 1;
+        }
     }
-    skArc(sketch, prefix ~ "outer", { "start" : arcTangent, "mid" : vector(0 * meter, ro), "end" : vector(-arcTangent[0], arcTangent[1]) });
-    skArc(sketch, prefix ~ "inner", { "start" : innerEnd, "mid" : vector(0 * meter, ri), "end" : vector(-innerEnd[0], innerEnd[1]) });
 }
 
-// Rectangular notches cut radially into a ring's outer edge; each notch's bottom corners sit
-// NOTCH_DEPTH inside the outer radius.
-function notchCutters(sketch is Sketch, prefix is string, outerRadius is ValueWithUnits, anglesInDegrees is array)
+// Half ring between two radii, spanning 0 to 180 degrees.
+function halfRing(sketch is Sketch, prefix is string, radii is array)
 {
-    const hw = NOTCH_WIDTH / 2;
+    const ri = radii[0];
+    const ro = radii[1];
+    const zero = 0 * meter;
+    skLineSegment(sketch, prefix ~ "right", { "start" : vector(ri, zero), "end" : vector(ro, zero) });
+    skArc(sketch, prefix ~ "outer", { "start" : vector(ro, zero), "mid" : vector(zero, ro), "end" : vector(-ro, zero) });
+    skLineSegment(sketch, prefix ~ "left", { "start" : vector(-ro, zero), "end" : vector(-ri, zero) });
+    skArc(sketch, prefix ~ "inner", { "start" : vector(-ri, zero), "mid" : vector(zero, ri), "end" : vector(ri, zero) });
+}
+
+// Rectangular notches cut radially into a ring's outer edge; each notch's bottom corners sit NOTCH_DEPTH
+// inside the outer radius.
+function notchCutters(sketch is Sketch, prefix is string, outerRadius is ValueWithUnits, width is ValueWithUnits, anglesInDegrees is array)
+{
+    const hw = width / 2;
     const bottom = sqrt((outerRadius - NOTCH_DEPTH) ^ 2 - hw ^ 2);
     const top = outerRadius + 0.5 * inch;
     var i = 0;
@@ -138,78 +167,73 @@ annotation { "Feature Type Name" : "POMO Parts" }
 export const pomoParts = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
-        annotation { "Name" : "Thickness" }
-        definition.thickness is PlateThickness;
-        annotation { "Name" : "Width" }
-        isLength(definition.width, LENGTH_BOUNDS);
-        annotation { "Name" : "Height" }
-        isLength(definition.height, LENGTH_BOUNDS);
-        annotation { "Name" : "Corner radius" }
-        isLength(definition.cornerRadius, LENGTH_BOUNDS);
-        annotation { "Name" : "Slot width" }
-        isLength(definition.slotWidth, LENGTH_BOUNDS);
-        annotation { "Name" : "Slot height" }
-        isLength(definition.slotHeight, LENGTH_BOUNDS);
-        annotation { "Name" : "Slot corner radius" }
-        isLength(definition.slotCornerRadius, LENGTH_BOUNDS);
-        annotation { "Name" : "Slot center from top edge" }
-        isLength(definition.slotOffset, LENGTH_BOUNDS);
+        annotation { "Name" : "Frame thickness" }
+        definition.frameThickness is PlateThickness;
+        annotation { "Name" : "Back panel thickness" }
+        definition.panelThickness is PlateThickness;
+        annotation { "Name" : "Ring thickness" }
+        definition.ringThickness is PlateThickness;
+        annotation { "Name" : "Straight rail thickness" }
+        definition.railThickness is PlateThickness;
+        annotation { "Name" : "Notch fit allowance", "Description" : "Added to the rail thickness to size the ring notches. Negative is tighter." }
+        isLength(definition.notchFit, FIT_BOUNDS);
     }
     {
-        const thickness = PLATE_THICKNESS_VALUES[definition.thickness];
         const sketchPlane = plane(vector(0, 0, 0) * meter, vector(0, -1, 0), vector(1, 0, 0));
-        const extrudeSketch = function(name is string, drawing is function)
+        const notchWidth = THICKNESS_VALUES[definition.railThickness] + definition.notchFit;
+        if (notchWidth <= 0 * inch)
+            throw regenError("Notch fit allowance leaves no notch width.", ["notchFit"]);
+
+        const extrude = function(name is string, thickness is PlateThickness, drawing is function) returns Query
             {
-                const sketch = newSketchOnPlane(context, id + (name ~ "Sketch"), { "sketchPlane" : sketchPlane });
+                const sketchId = id + (name ~ "Sketch");
+                const sketch = newSketchOnPlane(context, sketchId, { "sketchPlane" : sketchPlane });
                 drawing(sketch);
                 skSolve(sketch);
                 opExtrude(context, id + name, {
-                            "entities" : qSketchRegion(id + (name ~ "Sketch"), true),
+                            "entities" : qSketchRegion(sketchId, true),
                             "direction" : sketchPlane.normal,
                             "endBound" : BoundingType.BLIND,
-                            "endDepth" : thickness
+                            "endDepth" : THICKNESS_VALUES[thickness]
                         });
-                opDeleteBodies(context, id + (name ~ "DeleteSketch"), { "entities" : qCreatedBy(id + (name ~ "Sketch"), EntityType.BODY) });
+                opDeleteBodies(context, id + (name ~ "DeleteSketch"), { "entities" : qCreatedBy(sketchId, EntityType.BODY) });
                 return qCreatedBy(id + name, EntityType.BODY);
             };
+        const nameParts = function(part is Query, partName is string)
+            {
+                setProperty(context, { "entities" : part, "propertyType" : PropertyType.NAME, "value" : partName });
+            };
+        const notchedRing = function(name is string, partName is string, radii is array, notchAngles is array)
+            {
+                const ring = extrude(name, definition.ringThickness, function(sketch) { halfRing(sketch, "ring", radii); });
+                if (notchAngles != [])
+                {
+                    const cutters = extrude(name ~ "Notches", definition.ringThickness, function(sketch)
+                        {
+                            notchCutters(sketch, "notch", radii[1], notchWidth, notchAngles);
+                        });
+                    opBoolean(context, id + (name ~ "Cut"), { "tools" : cutters, "targets" : ring, "operationType" : BooleanOperationType.SUBTRACTION });
+                }
+                nameParts(ring, partName);
+            };
 
-        const plate = extrudeSketch("plate", function(sketch)
-            {
-                roundedRectangle(sketch, "outer", 0 * meter, -definition.height / 2, definition.width, definition.height, definition.cornerRadius);
-                roundedRectangle(sketch, "slot", 0 * meter, -definition.slotOffset, definition.slotWidth, definition.slotHeight, definition.slotCornerRadius);
-            });
-        const innerRail = extrudeSketch("innerRail", function(sketch)
-            {
-                halfRing(sketch, "ring", INNER_RAIL_INNER_RADIUS, INNER_RAIL_OUTER_RADIUS);
-            });
-        const innerNotches = extrudeSketch("innerNotches", function(sketch)
-            {
-                notchCutters(sketch, "notch", INNER_RAIL_OUTER_RADIUS, INNER_RAIL_NOTCH_ANGLES);
-            });
-        opBoolean(context, id + "cutInnerNotches", { "tools" : innerNotches, "targets" : innerRail, "operationType" : BooleanOperationType.SUBTRACTION });
-        opBoolean(context, id + "joinInnerRail", { "tools" : qUnion([plate, innerRail]), "operationType" : BooleanOperationType.UNION });
-
-        const outerRail = extrudeSketch("outerRail", function(sketch)
-            {
-                footedRing(sketch, "ring");
-            });
-        const outerNotches = extrudeSketch("outerNotches", function(sketch)
-            {
-                notchCutters(sketch, "notch", OUTER_RAIL_OUTER_RADIUS, OUTER_RAIL_NOTCH_ANGLES);
-            });
-        opBoolean(context, id + "cutOuterNotches", { "tools" : outerNotches, "targets" : outerRail, "operationType" : BooleanOperationType.SUBTRACTION });
-
-        extrudeSketch("straightRail", function(sketch)
-            {
-                skRectangle(sketch, "bar", { "firstCorner" : STRAIGHT_RAIL_MIN, "secondCorner" : STRAIGHT_RAIL_MAX });
-            });
+        nameParts(extrude("frame", definition.frameThickness, function(sketch)
+                {
+                    panelOutline(sketch, "outline");
+                    roundedRectangle(sketch, "window", 0 * meter, -PANEL_HEIGHT / 2, WINDOW_WIDTH, WINDOW_HEIGHT, WINDOW_CORNER_RADIUS);
+                }), "Frame");
+        nameParts(extrude("panel", definition.panelThickness, function(sketch) { panelOutline(sketch, "outline"); }), "Back panel");
+        notchedRing("largeRing", "Large ring", LARGE_RING_RADII, LARGE_RING_NOTCH_ANGLES);
+        notchedRing("middleRing", "Middle ring", MIDDLE_RING_RADII, MIDDLE_RING_NOTCH_ANGLES);
+        notchedRing("smallRing", "Small ring", SMALL_RING_RADII, []);
+        nameParts(extrude("straightRail", definition.railThickness, function(sketch)
+                {
+                    skRectangle(sketch, "bar", { "firstCorner" : STRAIGHT_RAIL_MIN, "secondCorner" : STRAIGHT_RAIL_MAX });
+                }), "Straight rail");
     }, {
-        thickness : PlateThickness.THREE_QUARTERS_INCH,
-        width : 15 * inch,
-        height : 16 * inch,
-        cornerRadius : 0.075 * inch,
-        slotWidth : 11 * inch,
-        slotHeight : 1 * inch,
-        slotCornerRadius : 0.125 * inch,
-        slotOffset : 8 * inch
+        frameThickness : PlateThickness.THREE_QUARTERS_INCH,
+        panelThickness : PlateThickness.HALF_INCH,
+        ringThickness : PlateThickness.HALF_INCH,
+        railThickness : PlateThickness.HALF_INCH,
+        notchFit : -0.002 * inch
     });
