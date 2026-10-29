@@ -12,6 +12,7 @@ import(path : "onshape/std/common.fs", version : "3095.0");
 // rail always fits them.
 
 // Stock thicknesses offered for the parts. Add new options here and in THICKNESS_VALUES.
+// The "actual" options are the typical true thickness of nominal plywood, which runs 1/32" undersize.
 export enum PlateThickness
 {
     annotation { "Name" : "1/2\"" }
@@ -19,13 +20,22 @@ export enum PlateThickness
     annotation { "Name" : "5/8\"" }
     FIVE_EIGHTHS_INCH,
     annotation { "Name" : "3/4\"" }
-    THREE_QUARTERS_INCH
+    THREE_QUARTERS_INCH,
+    annotation { "Name" : "15/32\" (1/2\" plywood actual)" }
+    HALF_INCH_PLYWOOD,
+    annotation { "Name" : "19/32\" (5/8\" plywood actual)" }
+    FIVE_EIGHTHS_INCH_PLYWOOD,
+    annotation { "Name" : "23/32\" (3/4\" plywood actual)" }
+    THREE_QUARTERS_INCH_PLYWOOD
 }
 
 const THICKNESS_VALUES = {
         PlateThickness.HALF_INCH : 0.5 * inch,
         PlateThickness.FIVE_EIGHTHS_INCH : 0.625 * inch,
-        PlateThickness.THREE_QUARTERS_INCH : 0.75 * inch
+        PlateThickness.THREE_QUARTERS_INCH : 0.75 * inch,
+        PlateThickness.HALF_INCH_PLYWOOD : 15 / 32 * inch,
+        PlateThickness.FIVE_EIGHTHS_INCH_PLYWOOD : 19 / 32 * inch,
+        PlateThickness.THREE_QUARTERS_INCH_PLYWOOD : 23 / 32 * inch
     };
 
 // Extra notch width beyond the rail thickness: negative for a press fit, positive for a loose fit.
