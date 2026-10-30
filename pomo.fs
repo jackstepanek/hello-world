@@ -181,15 +181,16 @@ function notchCutters(sketch is Sketch, prefix is string, outerRadius is ValueWi
 
 // Adds dogbones to every sharp inside corner of the given parts and checks the remaining geometry against the
 // router bit. Corners are the part edges that run through the thickness (along sheetNormal) where two flat
-// faces meet concavely.
-function addDogbones(context is Context, id is Id, parts is Query, sheetNormal is Vector, toolDiameter is ValueWithUnits)
+// faces meet concavely. partsByName maps each part's display name (for error messages) to its query.
+function addDogbones(context is Context, id is Id, partsByName is map, sheetNormal is Vector, toolDiameter is ValueWithUnits)
 {
     const toolRadius = toolDiameter / 2;
     const dogboneRadius = (toolDiameter + DOGBONE_CLEARANCE) / 2;
     var dogboneCount = 0;
-    for (var part in evaluateQuery(context, parts))
+    for (var entry in partsByName)
     {
-        const partName = getProperty(context, { "entity" : part, "propertyType" : PropertyType.NAME });
+        const partName = entry.key;
+        const part = entry.value;
         // Curved inside walls tighter than the bit can't be routed.
         for (var face in evaluateQuery(context, qGeometry(qOwnedByBody(part, EntityType.FACE), GeometryType.CYLINDER)))
         {
@@ -317,7 +318,15 @@ export const pomoParts = defineFeature(function(context is Context, id is Id, de
         {
             if (notchWidth < definition.toolDiameter || EDGE_NOTCH_OUTER_X - EDGE_NOTCH_INNER_X < definition.toolDiameter)
                 throw regenError("The router bit is wider than a notch. Choose a smaller bit.", ["toolDiameter"]);
-            addDogbones(context, id + "prep", qBodyType(qCreatedBy(id, EntityType.BODY), BodyType.SOLID), sketchPlane.normal, definition.toolDiameter);
+            const partsByName = {
+                    "Frame" : qCreatedBy(id + "frame", EntityType.BODY),
+                    "Back panel" : qCreatedBy(id + "panel", EntityType.BODY),
+                    "Large ring" : qCreatedBy(id + "largeRing", EntityType.BODY),
+                    "Middle ring" : qCreatedBy(id + "middleRing", EntityType.BODY),
+                    "Small ring" : qCreatedBy(id + "smallRing", EntityType.BODY),
+                    "Straight rail" : qCreatedBy(id + "straightRail", EntityType.BODY)
+                };
+            addDogbones(context, id + "prep", partsByName, sketchPlane.normal, definition.toolDiameter);
         }
     }, {
         frameThickness : PlateThickness.THREE_QUARTERS_INCH,
